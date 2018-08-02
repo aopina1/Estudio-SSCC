@@ -1,0 +1,4 @@
+GEN	gen_capacity_limit	gen_min_up	gen_min_down
+GEN1	10	2	2
+GEN2	20	4	4
+GEN3	30	5	5
