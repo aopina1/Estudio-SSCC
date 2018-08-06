@@ -1,2 +1,4 @@
 LOADZONE	over_gen_cost	load_shedding_cost
-Z1	5000	5000
+N	5000	5000
+C 	5000	5000
+S 	5000	5000

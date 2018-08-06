@@ -10,25 +10,22 @@ from timeit import default_timer as timer
 
 """ 
 ISSUES:
-1. Consider including an initial value for GenCommit and GenPg as a parameter, for specific constraints Gen_On_Off and Gen_Ramps. So far,
+Consider including an initial value for GenCommit and GenPg as a parameter, for specific constraints Gen_On_Off and Gen_Ramps. So far,
 all generators start with an OFF status and Pg=0.
-2. This Commit is still uninodal. Consider coding the extension to a multinodal system.
-3. Define outputs format
 """
 
 model = AbstractModel()
 
 model.LOADZONES = Set()
 model.GEN = Set()
-#model.LINE = Set()
+model.LINE = Set()
 model.TIMEPOINT = Set()
 
-
-
+model.GenPg = Var(model.GEN, model.TIMEPOINT, domain=NonNegativeReals)
+model.PowerFlow = Var(model.LINE, model.TIMEPOINT, domain=Reals)
+model.Theta = Var(model.LOADZONES, model.TIMEPOINT, domain=Reals)
 model.OverGeneration = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
 model.LoadShedding = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
-model.GenPg = Var(model.GEN, model.TIMEPOINT, domain=NonNegativeReals)
-
 
 model.noloadcost = Param(model.GEN)
 model.startupcost = Param(model.GEN)
@@ -41,28 +38,43 @@ model.rampup = Param(model.GEN)
 model.rampdown = Param(model.GEN)
 model.shutdownramp = Param(model.GEN)
 model.startupramp = Param(model.GEN)
+model.genzone = Param(model.GEN)
+
+model.frombus = Param(model.LINE)
+model.tobus = Param(model.LINE)
+model.constant = Param(model.LINE)
+model.flowlimit = Param(model.LINE)
 
 model.overgencost = Param(model.LOADZONES)
 model.loadsheddingcost = Param(model.LOADZONES)
 
+model.zonedemand = Param(model.TIMEPOINT,model.LOADZONES)
 model.gencommit = Param(model.GEN, model.TIMEPOINT)
 model.genstartup = Param(model.GEN, model.TIMEPOINT)
 model.genshutdown = Param(model.GEN, model.TIMEPOINT)
 
-###INCIDENCE MATRICES
-#
-#model.generationshiftfactor = Param(model.LINE)
-#model.flowlimit = Param(model.LINE)
 
-model.zonedemand = Param(model.TIMEPOINT,model.LOADZONES)
+model.GENS_IN_ZONE = Set(
+    model.LOADZONES,
+    initialize=lambda m, lz: set(
+        gen for gen in m.GEN if m.genzone[gen] == lz))
+
+model.LINES_TO_ZONE = Set(
+    model.LOADZONES,
+    initialize=lambda m, lz: set(
+        line for line in m.LINE if m.tobus[line] == lz))
+
+model.LINES_FROM_ZONE = Set(
+    model.LOADZONES,
+    initialize=lambda m, lz: set(
+        line for line in m.LINE if m.frombus[line] == lz))
 
 def obj_expression(m):
-    return sum(sum(
-            (m.variablecost[gen]*m.GenPg[gen,t])
-            for gen in m.GEN)
-            +sum(m.overgencost[loadzone]*m.OverGeneration[loadzone,t]
-            +m.loadsheddingcost[loadzone]*m.LoadShedding[loadzone,t]
-                    for loadzone in m.LOADZONES)
+    return sum(
+            sum((m.variablecost[gen]*m.GenPg[gen,t])for gen in m.GEN)
+            +sum(m.overgencost[lz]*m.OverGeneration[lz,t]
+            +m.loadsheddingcost[lz]*m.LoadShedding[lz,t]
+                    for lz in m.LOADZONES)
                for t in m.TIMEPOINT)
 model.Obj = Objective(rule=obj_expression)  
 
@@ -94,18 +106,30 @@ def upper_ramp_rule(m, gen, t):
                 <= m.rampup[gen]*m.gencommit[gen,t] + m.startupramp[gen]*m.genstartup[gen,t])
 model.Upper_Gen_Ramps = Constraint(model.GEN, model.TIMEPOINT, rule=upper_ramp_rule)
 
+def power_flow_rule(m, line, t):
+    frombus = m.frombus[line]
+    tobus = m.tobus[line]
+    return m.PowerFlow[line,t]== m.constant[line] * (m.Theta[frombus, t] - m.Theta[tobus,t])
+model.DcPowerFlow = Constraint(model.LINE, model.TIMEPOINT, rule=power_flow_rule)
 
-def load_balance_rule(m,t):
-    return (sum(m.zonedemand[t, loadzone]for loadzone in m.LOADZONES) 
-            + sum(m.OverGeneration[loadzone,t] for loadzone in m.LOADZONES)
-            - sum(m.LoadShedding[loadzone,t] for loadzone in m.LOADZONES)
-            == sum(m.GenPg[gen,t] for gen in m.GEN) )
-model.Load_Balance = Constraint(model.TIMEPOINT, rule=load_balance_rule)
+def flow_bound_rule(m,line,t):
+    return m.PowerFlow[line, t]<= m.flowlimit[line]
+model.FlowBound = Constraint(model.LINE, model.TIMEPOINT, rule=flow_bound_rule)
 
-#def power_flow_rule(m, line, t):
-#    return Constraint.Feasible
-#model.Power_Flow = Constraint(model.LINE, model.TIMEPOINT, rule=power_flow_rule)
+def zone_load_balance_rule(m, lz, t):
+        return (
+                m.zonedemand[t, lz] 
+            + m.OverGeneration[lz,t]
+            - m.LoadShedding[lz,t]
+            == sum(m.GenPg[gen,t] for gen in m.GENS_IN_ZONE[lz]) 
+            + sum(m.PowerFlow[line,t] for line in m.LINES_TO_ZONE[lz])
+            - sum(m.PowerFlow[line,t] for line in m.LINES_FROM_ZONE[lz])
+            )
+model.Zone_Load_Balance = Constraint(model.LOADZONES, model.TIMEPOINT, rule=zone_load_balance_rule)
 
+def theta_bound_rule(m, lz, t):
+    return Constraint.Feasible
+model.Theta_Bounds = Constraint(model.LOADZONES, model.TIMEPOINT, rule=theta_bound_rule)
 
 data = DataPortal()
 inputs_dir = 'ed_inputs'
@@ -121,12 +145,13 @@ data.load(filename=os.path.join(inputs_dir,'gen.tab'),
                  model.mindowntime, model.minuptime, 
                  model.genpmin, model.genpmax, 
                  model.rampup, model.rampdown,
-                 model.startupramp, model.shutdownramp),
+                 model.startupramp, model.shutdownramp,
+                 model.genzone),
           index=model.GEN)
 
-#data.load(filename=os.path.join(inputs_dir,'line.tab'), 
-#          param=(model.generationshiftfactor, model.flowlimit), 
-#          index=model.LINE)
+data.load(filename=os.path.join(inputs_dir,'line.tab'), 
+          param=(model.constant, model.tobus, model.frombus, model.flowlimit), 
+          index=model.LINE)
 
 data.load(filename=os.path.join(inputs_dir,'zone_demand.tab'),
           param=model.zonedemand,
@@ -146,7 +171,6 @@ data.load(filename=os.path.join(inputs_dir,'gen_shut_down.tab'),
 
 instance = model.create_instance(data)
 print "Model instance successfully created"
-
 
 instance.preprocess()
 solver = 'gurobi' # ipopt gurobi
@@ -174,6 +198,10 @@ LOAD_SHEDDING = pd.DataFrame(data=[[instance.LoadShedding[lz,t].value for lz in 
                              columns= instance.LOADZONES, index=instance.TIMEPOINT)
 OVER_GEN = pd.DataFrame(data=[[instance.OverGeneration[lz,t].value for lz in instance.LOADZONES] for t in instance.TIMEPOINT],
                              columns= instance.LOADZONES, index=instance.TIMEPOINT)
+POWER_FLOW = pd.DataFrame(data=[[instance.PowerFlow[line,t].value for line in instance.LINE] for t in instance.TIMEPOINT],
+                             columns= instance.LINE, index=instance.TIMEPOINT)
+THETA = pd.DataFrame(data=[[instance.Theta[lz,t].value for lz in instance.LOADZONES] for t in instance.TIMEPOINT],
+                             columns= instance.LOADZONES, index=instance.TIMEPOINT)
 
 script_dir = os.path.dirname(__file__)
 results_dir = 'ed_outputs'
@@ -184,3 +212,5 @@ if not os.path.isdir(results_dir):
 GEN_PG.to_csv(os.path.join(results_dir,'gen_pg.tab'),sep='\t')
 LOAD_SHEDDING.to_csv(os.path.join(results_dir,'load_shedding.tab'),sep='\t')
 OVER_GEN.to_csv(os.path.join(results_dir,'over_gen.tab'),sep='\t')
+POWER_FLOW.to_csv(os.path.join(results_dir,'power_flow.tab'), sep='\t')
+THETA.to_csv(os.path.join(results_dir,'theta.tab'), sep='\t')
