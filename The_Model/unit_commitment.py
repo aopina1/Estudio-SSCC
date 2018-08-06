@@ -10,8 +10,9 @@ from timeit import default_timer as timer
 
 """ 
 ISSUES:
-Consider including an initial value for GenCommit and GenPg as a parameter, for specific constraints Gen_On_Off and Gen_Ramps. So far,
+1.Consider including an initial value for GenCommit and GenPg as a parameter, for specific constraints Gen_On_Off and Gen_Ramps. So far,
 all generators start with an OFF status and Pg=0.
+2. Batteries
 """
 
 model = AbstractModel()
@@ -20,15 +21,6 @@ model.LOADZONES = Set()
 model.GEN = Set()
 model.LINE = Set()
 model.TIMEPOINT = Set()
-
-model.GenCommit = Var(model.GEN, model.TIMEPOINT, domain=Binary)
-model.GenStartUp = Var(model.GEN, model.TIMEPOINT, domain=Binary)
-model.GenShutDown = Var(model.GEN, model.TIMEPOINT, domain=Binary)
-model.GenPg = Var(model.GEN, model.TIMEPOINT, domain=NonNegativeReals)
-model.PowerFlow = Var(model.LINE, model.TIMEPOINT, domain=Reals)
-model.Theta = Var(model.LOADZONES, model.TIMEPOINT, domain=Reals)
-model.OverGeneration = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
-model.LoadShedding = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
 
 model.noloadcost = Param(model.GEN)
 model.startupcost = Param(model.GEN)
@@ -42,6 +34,8 @@ model.rampdown = Param(model.GEN)
 model.shutdownramp = Param(model.GEN)
 model.startupramp = Param(model.GEN)
 model.genzone = Param(model.GEN)
+model.genisvariable = Param(model.GEN)
+model.genuseswatercost = Param(model.GEN)
 
 model.frombus = Param(model.LINE)
 model.tobus = Param(model.LINE)
@@ -67,24 +61,68 @@ model.LINES_FROM_ZONE = Set(
     initialize=lambda m, lz: set(
         line for line in m.LINE if m.frombus[line] == lz))
 
+model.VARIABLE_GENS = Set(
+    initialize=lambda m: set(
+        gen for gen in m.GEN if m.genisvariable[gen]))
+
+model.VARIABLE_WATER_COST_GENS = Set(
+    initialize=lambda m: set(
+        gen for gen in m.GEN if m.genuseswatercost[gen]))
+
+model.capacityfactor = Param(model.TIMEPOINT, model.VARIABLE_GENS)
+model.variablewatercost = Param(model.TIMEPOINT, model.VARIABLE_WATER_COST_GENS)
+
+model.GenCommit = Var(model.GEN, model.TIMEPOINT, domain=Binary)
+model.GenStartUp = Var(model.GEN, model.TIMEPOINT, domain=Binary)
+model.GenShutDown = Var(model.GEN, model.TIMEPOINT, domain=Binary)
+model.GenPg = Var(model.GEN, model.TIMEPOINT, domain=NonNegativeReals)
+model.PowerFlow = Var(model.LINE, model.TIMEPOINT, domain=Reals)
+model.Theta = Var(model.LOADZONES, model.TIMEPOINT, domain=Reals)
+model.OverGeneration = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
+model.LoadShedding = Var(model.LOADZONES, model.TIMEPOINT, domain=NonNegativeReals)
+
+
+
 def obj_expression(m):
-    return sum(sum(
-            (m.noloadcost[gen]*m.GenCommit[gen,t] 
-            + m.startupcost[gen]*m.GenStartUp[gen,t] 
-            + m.variablecost[gen]*m.GenPg[gen,t])
-            for gen in m.GEN)
-            +sum(m.overgencost[lz]*m.OverGeneration[lz,t]
-            +m.loadsheddingcost[lz]*m.LoadShedding[lz,t]
-                    for lz in m.LOADZONES)
-               for t in m.TIMEPOINT)
+    
+    Total_Variable_Cost = 0.0
+    Total_No_Load_Cost = 0.0
+    Total_Start_Up_Cost = 0.0
+    Total_Over_Gen_Cost = 0.0
+    Total_Load_Shedding_Cost = 0.0
+    
+    for t in m.TIMEPOINT:
+        for gen in m.GEN:
+            Total_No_Load_Cost += m.noloadcost[gen]*m.GenCommit[gen,t]
+            Total_Start_Up_Cost += m.startupcost[gen]*m.GenStartUp[gen,t] 
+            if gen in m.VARIABLE_WATER_COST_GENS:
+                Total_Variable_Cost += m.variablewatercost[t,gen]*m.GenPg[gen,t]
+            else:
+                Total_Variable_Cost += m.variablecost[gen]*m.GenPg[gen,t]
+        for lz in m.LOADZONES:
+            Total_Over_Gen_Cost += m.overgencost[lz]*m.OverGeneration[lz,t]
+            Total_Load_Shedding_Cost += m.loadsheddingcost[lz]*m.LoadShedding[lz,t]
+            
+    return (Total_Variable_Cost 
+            + Total_No_Load_Cost 
+            + Total_Start_Up_Cost 
+            + Total_Over_Gen_Cost
+            + Total_Load_Shedding_Cost)
+    
 model.Obj = Objective(rule=obj_expression)  
 
 def gen_p_min_rule(m, gen, t):
-    return (m.GenCommit[gen,t]*m.genpmin[gen]<= m.GenPg[gen,t])
+    if gen in m.VARIABLE_GENS:
+        return (m.GenCommit[gen,t]*m.genpmin[gen]<= m.GenPg[gen,t])
+    else:
+        return (m.GenCommit[gen,t]*m.genpmin[gen]<= m.GenPg[gen,t])
 model.Gen_P_Min = Constraint(model.GEN, model.TIMEPOINT, rule=gen_p_min_rule)
 
 def gen_p_max_rule(m, gen, t):
-    return (m.GenPg[gen,t] <= m.GenCommit[gen,t]*m.genpmax[gen])
+    if gen in m.VARIABLE_GENS:
+        return (m.GenPg[gen,t] <= m.GenCommit[gen,t]*m.genpmax[gen]*m.capacityfactor[t,gen])
+    else:
+        return (m.GenPg[gen,t] <= m.GenCommit[gen,t]*m.genpmax[gen])
 model.Gen_P_Max = Constraint(model.GEN, model.TIMEPOINT, rule=gen_p_max_rule)
 
 def on_off_rule(m, gen, t):
@@ -182,7 +220,7 @@ data.load(filename=os.path.join(inputs_dir,'gen.tab'),
                  model.genpmin, model.genpmax, 
                  model.rampup, model.rampdown,
                  model.startupramp, model.shutdownramp,
-                 model.genzone),
+                 model.genzone, model.genisvariable, model.genuseswatercost),
           index=model.GEN)
 
 data.load(filename=os.path.join(inputs_dir,'line.tab'), 
@@ -191,6 +229,14 @@ data.load(filename=os.path.join(inputs_dir,'line.tab'),
 
 data.load(filename=os.path.join(inputs_dir,'zone_demand.tab'),
           param=model.zonedemand,
+          format='array')
+
+data.load(filename=os.path.join(inputs_dir,'variable_capacity_factors.tab'),
+          param=model.capacityfactor,
+          format='array')
+
+data.load(filename=os.path.join(inputs_dir,'variable_water_cost.tab'),
+          param=model.variablewatercost,
           format='array')
 
 instance = model.create_instance(data)

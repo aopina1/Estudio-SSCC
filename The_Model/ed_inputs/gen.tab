@@ -1,4 +1,4 @@
-GEN	no_load_cost	start_up_cost	variable_cost	min_down_time	min_up_time	gen_p_min	gen_p_max	ramp_up	ramp_down	start_up_ramp	shut_down_ramp gen_zone
-G1-N	3.0	5.0	1.0	2	2	5	20	2	2	3	5	N
-G2-C	3.0	7.0	2.0	2	2	5	20	2	2	3	5	C
-G3-S	3.0	9.0	3.0	2	2	5	20	2	2	3	5	S
+GEN	no_load_cost	start_up_cost	variable_cost	min_down_time	min_up_time	gen_p_min	gen_p_max	ramp_up	ramp_down	start_up_ramp	shut_down_ramp gen_zone	gen_is_variable	fuel_cost_is_variable
+G1-N	3.0	5.0	1.0	2	2	5	20	2	2	3	5	N	True	False
+G2-C	3.0	7.0	2.0	2	2	5	20	2	2	3	5	C	False	True
+G3-S	3.0	9.0	3.0	2	2	5	20	2	2	3	5	S	False	True
